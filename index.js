@@ -2,6 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
+const cron = require('node-cron');
 const { handleMessage } = require('./handles/handleMessage');
 const { handlePostback } = require('./handles/handlePostback');
 
@@ -11,6 +12,9 @@ app.use(express.json());
 const VERIFY_TOKEN = 'pagebot';
 const PAGE_ACCESS_TOKEN = fs.readFileSync('token.txt', 'utf8').trim();
 const COMMANDS_PATH = path.join(__dirname, 'commands');
+
+// Player state storage
+const playerState = {};
 
 // Webhook verification
 app.get('/webhook', (req, res) => {
@@ -24,7 +28,7 @@ app.get('/webhook', (req, res) => {
     return res.sendStatus(403);
   }
 
-  res.sendStatus(400); // Bad request if neither mode nor token are provided
+  res.sendStatus(400);
 });
 
 // Webhook event handling
@@ -32,11 +36,16 @@ app.post('/webhook', (req, res) => {
   const { body } = req;
 
   if (body.object === 'page') {
-    // Ensure entry and messaging exist before iterating
     body.entry?.forEach(entry => {
       entry.messaging?.forEach(event => {
         if (event.message) {
-          handleMessage(event, PAGE_ACCESS_TOKEN);
+          // If the player has no state, initialize the game automatically
+          if (!playerState[event.sender.id]) {
+            playerState[event.sender.id] = { era: 'ancient_egypt', artifacts: [] };
+            require('./commands/start').execute(event.sender.id, [], PAGE_ACCESS_TOKEN, playerState);
+          } else {
+            handleMessage(event, PAGE_ACCESS_TOKEN, playerState);
+          }
         } else if (event.postback) {
           handlePostback(event, PAGE_ACCESS_TOKEN);
         }
@@ -64,25 +73,21 @@ const sendMessengerProfileRequest = async (method, url, data = null) => {
     throw error;
   }
 };
-//autopost
+
+// Autopost function with cron
 async function post() {
   console.log("Auto 1 Hour Post Enabled");
-  const autoPost = cron.schedule(`0 */1 * * *`, async () => {
-    const {
-      content,
-      author
-    } = (await axios.get(`https://api.realinspire.tech/v1/quotes/random`)).data[0];
-    await api.publishPost(`💭 Remember...
-${content}
--${author}
-`, PAGE_ACCESS_TOKEN);
+  const autoPost = cron.schedule('0 */1 * * *', async () => {
+    const { content, author } = (await axios.get('https://api.realinspire.tech/v1/quotes/random')).data[0];
+    await api.publishPost(`💭 Remember...\n${content}\n-${author}`, PAGE_ACCESS_TOKEN);
     console.log("Triggered autopost.");
   }, {
     scheduled: true,
-    timezone: "Asia/Manila"
+    timezone: 'Asia/Manila'
   });
   autoPost.start();
 }
+
 // Load all command files from the "commands" directory
 const loadCommands = () => {
   return fs.readdirSync(COMMANDS_PATH)
@@ -106,7 +111,7 @@ const loadMenuCommands = async (isReload = false) => {
 
   // Load new or updated commands
   await sendMessengerProfileRequest('post', '/me/messenger_profile', {
-    commands: [{ locale: 'default', commands }],
+    commands: [{ locale: 'default', commands }]
   });
 
   console.log('Menu commands loaded successfully.');
